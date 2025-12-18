@@ -1,133 +1,185 @@
-use std::{
-    fmt::Display,
-    fs::File,
-    io::{self, BufRead, BufReader, Read},
+use std::{borrow::Cow, path::PathBuf};
+
+use crate::routes::hexdump::hexdump::Hexdump;
+use crate::routes::starting::starting::Starting;
+use gpui::{
+    actions, div, prelude::*, px, size, App, Application, AssetSource, Bounds, Context,
+    DefiniteLength, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Keystroke,
+    SharedString, Window, WindowBounds, WindowOptions,
+};
+use gpui_component::{
+    black,
+    resizable::ResizableState,
+    sidebar::{
+        Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarToggleButton,
+    },
+    white, ActiveTheme, Icon, IconName, Side, StyledExt, ThemeMode,
 };
 
-use clap::Parser;
+mod routes;
 
-#[derive(Parser)]
-pub struct Args {
-    /// File to dump
-    pub file: String,
-    /// Amount of lines displayed per-page
-    #[arg(short, long)]
-    pub line_length: Option<usize>,
+actions!(rustdump, [OpenFile]);
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/**/*.svg"]
+#[include = "images/**/*.png"]
+#[include = "fonts/**/*.ttf"]
+pub struct Assets;
+
+#[derive(PartialEq)]
+enum Route {
+    Starting,
+    Hexdump,
 }
 
-struct OutputRow {
-    offset: u64,
-    bytes: Vec<u8>,
+struct RustDump {
+    current_route: Route,
+    focus_handle: FocusHandle,
+    curr_file: Option<PathBuf>,
+    hexdump: Option<Hexdump>,
+    starting: Starting,
+    sidebar_state: Entity<ResizableState>,
 }
 
-impl OutputRow {
-    fn new() -> Self {
-        OutputRow {
-            offset: 0,
-            bytes: Vec::new(),
+impl RustDump {
+    // Create a new instance with window parameter
+    fn new(cx: &mut Context<Self>, window: &mut Window) -> Self {
+        // Set up key handler HERE, not in render
+        let resize_state = cx.new(|_| ResizableState::default());
+
+        Self {
+            sidebar_state: resize_state,
+            current_route: Route::Starting,
+            focus_handle: cx.focus_handle(),
+            curr_file: None,
+            starting: Starting::new(),
+            hexdump: None,
+        }
+    }
+
+    fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
+        let path = rfd::FileDialog::new().pick_file();
+        if let Some(path) = path {
+            println!("{:?}", path);
+            self.curr_file = Some(path);
+            self.current_route = Route::Hexdump;
+            self.hexdump = Some(Hexdump::new(self, cx, window));
+
+            cx.notify();
         }
     }
 }
 
-impl Display for OutputRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:08X} ", self.offset)?;
-        for byte in &self.bytes {
-            write!(f, "{:02X} ", byte)?;
+impl Focusable for RustDump {
+    fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+        cx.focus_handle()
+    }
+}
+
+impl Render for RustDump {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h_flex()
+            .track_focus(&self.focus_handle)
+            .key_context("rustdump")
+            .on_action(cx.listener(Self::open_file))
+            .size_full()
+            .text_color(cx.theme().foreground)
+            .child(
+                Sidebar::new(Side::Left)
+                    .w_40()
+                    .font_family(SharedString::from("Diodrum Cyrillic"))
+                    .collapsible(true)
+                    .header(SidebarHeader::new().child(div().child("Rustdump")))
+                    .child(
+                        SidebarGroup::new("Menu").child(
+                            SidebarMenu::new().child(
+                                SidebarMenuItem::new("Hexdump")
+                                    .icon(IconName::Folder)
+                                    .on_click(cx.listener(|app, _, _, _| {
+                                        if app.curr_file.is_some() {
+                                            app.current_route = Route::Hexdump;
+                                        }
+                                    })),
+                            ),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .size_full()
+                    .child(
+                        div()
+                            .h_10()
+                            .w_full()
+                            .border_b_1()
+                            .bg(cx.theme().background)
+                            .border_color(cx.theme().border),
+                    )
+                    .child(match self.current_route {
+                        Route::Starting => self.starting.render(cx),
+                        Route::Hexdump => {
+                            if let Some(hexdump) = &mut self.hexdump {
+                                hexdump.render(window, cx)
+                            } else {
+                                self.starting.render(cx)
+                            }
+                        }
+                    }),
+            )
+    }
+}
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
         }
-        for byte in &self.bytes {
-            let ch = *byte as char;
-            let ch = if ch.is_ascii_graphic() { ch } else { '.' };
-            write!(f, "{} ", ch)?;
-        }
-        Ok(())
+
+        Self::get(path)
+            .map(|f| Some(f.data))
+            .ok_or_else(|| anyhow::anyhow!("could not find asset at path \"{path}\""))
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter_map(|p| p.starts_with(path).then(|| p.into()))
+            .collect())
     }
 }
 
 fn main() {
-    let args = Args::parse();
-    let path = args.file;
+    Application::new().run(|cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
+        cx.bind_keys(vec![KeyBinding::new("ctrl-o", OpenFile, None)]);
 
-    let file = File::open(&path).unwrap();
-    let mut reader = BufReader::new(file);
-    let mut buf = vec![];
-    let n = match reader.read_to_end(&mut buf) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("Failed to read file: {}", e);
-            std::process::exit(1);
-        }
-    };
+        let _ = cx.text_system().add_fonts(vec![Assets
+            .load("fonts/DiodrumCyrillic-Regular.ttf")
+            .unwrap()
+            .unwrap()]);
 
-    println!("Read {} bytes from file {}", n, path);
-    let bytes = buf.bytes();
-    let mut output: Vec<OutputRow> = Vec::new();
-    let mut curr_row = OutputRow::new();
-    for byte in bytes {
-        match byte {
-            Ok(byte) => {
-                if curr_row.bytes.len() >= 16 {
-                    let old_offset = curr_row.offset;
-                    output.push(curr_row);
-                    curr_row = OutputRow::new();
-                    curr_row.offset = old_offset + 16;
-                }
+        gpui_component::init(cx);
+        gpui_component::Theme::change(ThemeMode::Dark, None, cx);
+        let theme = gpui_component::Theme::global_mut(cx);
+        theme.font_family = "Diodrum Cyrillic".into();
 
-                curr_row.bytes.push(byte);
-            }
-            Err(e) => {
-                eprintln!("{e}")
-            }
-        }
-    }
+        let window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |window, cx| cx.new(|cx| RustDump::new(cx, window)),
+            )
+            .unwrap();
 
-    let mut out = String::new();
-    let mut last_row: Option<OutputRow> = None;
-    for row in output {
-        // "Concatenate" rows with identical bytes
-        if let Some(last_row_some) = last_row {
-            if last_row_some.bytes == row.bytes {
-                if !out.ends_with("*\n") {
-                    out += "*\n";
-                }
-                last_row = Some(row);
-                continue;
-            }
-        }
-        out += format!("{}\n", row).as_str();
-
-        last_row = Some(row);
-    }
-
-    if let Some(line_length) = args.line_length {
-        let out_split = out.split("\n").collect::<Vec<&str>>();
-        let mut offset = 0;
-        loop {
-            let out = (offset..offset + line_length)
-                .filter_map(|i| {
-                    if i < out_split.len() {
-                        Some(out_split[i].to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<String>>();
-            if offset >= out_split.len() {
-                break;
-            }
-            offset += line_length;
-            println!("{}", out.join("\n"));
-            println!(
-                "Press Enter to continue ({}/{})...",
-                (offset / line_length) as usize,
-                (out_split.len() / line_length) as usize
-            );
-            let mut t = String::new();
-            let _ = io::stdin().read_line(&mut t);
-        }
-
-        return;
-    }
-
-    println!("{}", out);
+        window
+            .update(cx, |rust_dump, window, cx| {
+                window.focus(&rust_dump.focus_handle(cx));
+                cx.activate(true);
+            })
+            .unwrap();
+    });
 }
