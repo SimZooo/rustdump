@@ -1,9 +1,11 @@
+use std::time::Duration;
+use std::time::Instant;
 use std::{rc::Rc, sync::Arc};
 
-use gpui::{div, prelude::*, App, Context, Div, Entity, SharedString, Window};
+use gpui::{App, Context, Div, Entity, SharedString, Window, div, prelude::*};
 use gpui_component::{
-    table::{Column, Table, TableDelegate, TableState},
     ActiveTheme,
+    table::{Column, Table, TableDelegate, TableState},
 };
 
 use crate::RustDump;
@@ -71,7 +73,11 @@ impl TableDelegate for HexDelegate {
 impl Hexdump {
     pub fn new(app: &RustDump, cx: &mut Context<RustDump>, window: &mut Window) -> Self {
         if let Some(file) = app.curr_file.clone() {
-            let dump = Rc::new(core::create_dump(file));
+            let start = Instant::now();
+            let mut dump = vec![];
+            let n = core::create_dump(file, &mut dump);
+            println!("Dump time: {}", start.elapsed().as_secs_f64());
+            let dump = Rc::new(dump);
             let delegate = HexDelegate::new(dump.clone(), window);
             let state = cx.new(|cx| TableState::new(delegate.clone(), window, cx));
             return Self {
