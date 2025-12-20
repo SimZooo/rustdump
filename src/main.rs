@@ -1,19 +1,18 @@
-use std::{borrow::Cow, path::PathBuf};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-use crate::routes::hexdump::hexdump::Hexdump;
-use crate::routes::starting::starting::Starting;
+use crate::routes::{hexdump::hexdump::Hexdump, info::info::Info, starting::starting::Starting};
 use gpui::{
-    actions, div, prelude::*, px, size, App, Application, AssetSource, Bounds, Context,
-    DefiniteLength, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Keystroke,
-    SharedString, Window, WindowBounds, WindowOptions,
+    AnyElement, App, Application, AssetSource, Bounds, Context, DefiniteLength, FocusHandle,
+    Focusable, KeyBinding, SharedString, Window, WindowBounds, WindowOptions, actions, div,
+    prelude::*, px, size, transparent_black,
 };
 use gpui_component::{
-    black,
-    resizable::ResizableState,
-    sidebar::{
-        Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarToggleButton,
-    },
-    white, ActiveTheme, Icon, IconName, Side, StyledExt, ThemeMode,
+    ActiveTheme, StyledExt, ThemeMode,
+    button::{Button, ButtonCustomVariant, ButtonVariants},
 };
 
 mod routes;
@@ -27,44 +26,72 @@ actions!(rustdump, [OpenFile]);
 #[include = "fonts/**/*.ttf"]
 pub struct Assets;
 
-#[derive(PartialEq)]
-enum Route {
+#[derive(PartialEq, Eq, Hash)]
+pub enum RouteName {
     Starting,
+    Info,
     Hexdump,
 }
 
-struct RustDump {
-    current_route: Route,
-    focus_handle: FocusHandle,
-    curr_file: Option<PathBuf>,
-    hexdump: Option<Hexdump>,
-    starting: Starting,
-    sidebar_state: Entity<ResizableState>,
+pub enum InfoDisplayPage {
+    DOSHeaders,
+    DOSStub,
+    NTHeaders,
+    SectionHeaders,
+}
+
+pub trait Route {
+    fn render(&self, cx: &mut Context<RustDump>, app: &RustDump) -> AnyElement;
+    fn load(&mut self, cx: &mut Context<RustDump>, window: &mut Window, path: &Path);
+}
+
+pub struct RustDump {
+    pub current_route: RouteName,
+    pub focus_handle: FocusHandle,
+    pub routes: HashMap<RouteName, Box<dyn Route>>,
+    pub curr_file: Option<PathBuf>,
+    pub custom_button: ButtonCustomVariant,
+    pub info_page: InfoDisplayPage,
 }
 
 impl RustDump {
     // Create a new instance with window parameter
     fn new(cx: &mut Context<Self>, window: &mut Window) -> Self {
+        let mut routes: HashMap<RouteName, Box<dyn Route>> = HashMap::new();
+        routes.insert(RouteName::Starting, Box::new(Starting::new()));
+        routes.insert(RouteName::Info, Box::new(Info::new(window, cx)));
+        routes.insert(RouteName::Hexdump, Box::new(Hexdump::new(window, cx)));
+
         // Set up key handler HERE, not in render
-        let resize_state = cx.new(|_| ResizableState::default());
+        let custom_button = ButtonCustomVariant::new(cx)
+            .color(cx.theme().background)
+            .foreground(cx.theme().foreground)
+            .border(transparent_black())
+            .hover(cx.theme().background)
+            .active(cx.theme().accent);
 
         Self {
-            sidebar_state: resize_state,
-            current_route: Route::Starting,
+            info_page: InfoDisplayPage::DOSHeaders,
+            routes,
+            current_route: RouteName::Starting,
             focus_handle: cx.focus_handle(),
             curr_file: None,
-            starting: Starting::new(),
-            hexdump: None,
+            custom_button,
         }
     }
 
     fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let path = rfd::FileDialog::new().pick_file();
         if let Some(path) = path {
-            println!("{:?}", path);
+            // Load file into current route and change hashmap-value
+            self.current_route = RouteName::Info;
+
+            // Load all paths
+            self.routes
+                .values_mut()
+                .for_each(|route| route.load(cx, window, &path));
+
             self.curr_file = Some(path);
-            self.current_route = Route::Hexdump;
-            self.hexdump = Some(Hexdump::new(self, cx, window));
 
             cx.notify();
         }
@@ -78,56 +105,56 @@ impl Focusable for RustDump {
 }
 
 impl Render for RustDump {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h_flex()
+            .v_flex()
             .track_focus(&self.focus_handle)
             .key_context("rustdump")
             .on_action(cx.listener(Self::open_file))
             .size_full()
             .text_color(cx.theme().foreground)
             .child(
-                Sidebar::new(Side::Left)
-                    .w_40()
-                    .font_family(SharedString::from("Diodrum Cyrillic"))
-                    .collapsible(true)
-                    .header(SidebarHeader::new().child(div().child("Rustdump")))
+                div()
+                    .h_flex()
+                    .w_full()
+                    .h_8()
+                    .border_b_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .bg(cx.theme().background)
+                    .font_family("Diodrum Cyrillic")
                     .child(
-                        SidebarGroup::new("Menu").child(
-                            SidebarMenu::new().child(
-                                SidebarMenuItem::new("Hexdump")
-                                    .icon(IconName::Folder)
-                                    .on_click(cx.listener(|app, _, _, _| {
-                                        if app.curr_file.is_some() {
-                                            app.current_route = Route::Hexdump;
-                                        }
-                                    })),
-                            ),
-                        ),
+                        Button::new("info")
+                            .child("Info")
+                            .on_click(cx.listener(|app, _event, _window, cx| {
+                                app.current_route = RouteName::Info;
+                                cx.notify();
+                            }))
+                            .custom(self.custom_button)
+                            .px_6(),
+                    )
+                    .child(
+                        div()
+                            .h(DefiniteLength::Fraction(0.6))
+                            .w_1()
+                            .border_l_1()
+                            .border_color(cx.theme().sidebar_border),
+                    )
+                    .child(
+                        Button::new("hexdump")
+                            .child("Hexdump")
+                            .on_click(cx.listener(|app, _event, _window, cx| {
+                                app.current_route = RouteName::Hexdump;
+                                cx.notify();
+                            }))
+                            .custom(self.custom_button)
+                            .px_6(),
                     ),
             )
             .child(
                 div()
                     .v_flex()
                     .size_full()
-                    .child(
-                        div()
-                            .h_10()
-                            .w_full()
-                            .border_b_1()
-                            .bg(cx.theme().background)
-                            .border_color(cx.theme().border),
-                    )
-                    .child(match self.current_route {
-                        Route::Starting => self.starting.render(cx),
-                        Route::Hexdump => {
-                            if let Some(hexdump) = &mut self.hexdump {
-                                hexdump.render(window, cx)
-                            } else {
-                                self.starting.render(cx)
-                            }
-                        }
-                    }),
+                    .child(self.routes[&self.current_route].render(cx, self)),
             )
     }
 }
@@ -151,14 +178,19 @@ impl AssetSource for Assets {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
         cx.bind_keys(vec![KeyBinding::new("ctrl-o", OpenFile, None)]);
+        Assets.load("icons/file-text.svg").unwrap().unwrap();
+        Assets.load("icons/file-spreadsheet.svg").unwrap().unwrap();
+        Assets.load("icons/list-tree.svg").unwrap().unwrap();
 
-        let _ = cx.text_system().add_fonts(vec![Assets
-            .load("fonts/DiodrumCyrillic-Regular.ttf")
-            .unwrap()
-            .unwrap()]);
+        let _ = cx.text_system().add_fonts(vec![
+            Assets
+                .load("fonts/DiodrumCyrillic-Regular.ttf")
+                .unwrap()
+                .unwrap(),
+        ]);
 
         gpui_component::init(cx);
         gpui_component::Theme::change(ThemeMode::Dark, None, cx);

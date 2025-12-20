@@ -1,15 +1,17 @@
-use std::any::TypeId;
-
-use gpui::{
-    actions, div, prelude::*, App, Context, Div, KeyBinding, KeyDownEvent, KeyEvent, KeyUpEvent,
-    Keystroke, Modifiers, SharedString, Window,
-};
+use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*};
 use gpui_component::ActiveTheme;
 
-use crate::RustDump;
+use crate::{Route, RustDump};
 
-pub struct Starting {
-    // Fields and methods go here
+pub struct Starting {}
+
+impl Route for Starting {
+    fn render(&self, cx: &mut Context<RustDump>, _app: &RustDump) -> AnyElement {
+        self.render_route(cx)
+    }
+
+    fn load(&mut self, _cx: &mut Context<RustDump>, _window: &mut Window, _path: &std::path::Path) {
+    }
 }
 
 impl Starting {
@@ -17,7 +19,7 @@ impl Starting {
         Self {}
     }
 
-    pub fn render(&mut self, cx: &mut Context<RustDump>) -> Div {
+    pub fn render_route(&self, cx: &mut Context<RustDump>) -> AnyElement {
         div()
             .size_full()
             .flex()
@@ -29,5 +31,6 @@ impl Starting {
             .text_color(cx.theme().foreground)
             .font_family(SharedString::from("Diodrum Cyrillic"))
             .child("Open file with Ctrl + O")
+            .into_any_element()
     }
 }
