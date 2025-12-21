@@ -1,83 +1,33 @@
 use std::{fs, path::Path};
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, SharedString, Styled,
-    Window, div, transparent_black,
+    AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
+    transparent_black,
 };
 use gpui_component::{
     ActiveTheme, Icon, StyledExt,
     button::{Button, ButtonCustomVariant, ButtonVariants},
-    table::{Column, Table, TableDelegate, TableState},
 };
-use serde_json::Value;
+use pe_parse::{ImageDosHeader, ImageFileHeader, OptionalHeaders};
+use rd_core::push_hex;
 
-use crate::{InfoDisplayPage, Route, RustDump};
+use crate::{
+    InfoDisplayPage, Route, RustDump,
+    components::{
+        asciiview::AsciiView,
+        headertable::{HeaderData, HeaderTable},
+        hexview::Hexview,
+    },
+};
 
 pub struct Info {
     pe_header: Option<pe_parse::PEHeader>,
     custom_btn: ButtonCustomVariant,
-    table_state: Entity<TableState<DosHeaderTable>>,
-}
-
-#[derive(Debug)]
-pub struct DosHeaderData {
-    offset: usize,
-    name: String,
-    value: Value,
-    meaning: String,
-}
-
-#[derive(Debug)]
-pub struct DosHeaderTable {
-    data: Vec<DosHeaderData>,
-    cols: Vec<Column>,
-}
-
-impl DosHeaderTable {
-    pub fn new(data: Vec<DosHeaderData>) -> Self {
-        Self {
-            data,
-            cols: vec![
-                Column::new("offset", "Offset".to_string()),
-                Column::new("name", "Name".to_string()),
-                Column::new("value", "Value".to_string()),
-                Column::new("meaning", "Meaning".to_string()),
-            ],
-        }
-    }
-}
-
-impl TableDelegate for DosHeaderTable {
-    fn columns_count(&self, _: &App) -> usize {
-        self.cols.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.data.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> &Column {
-        &self.cols[col_ix]
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let row = &self.data[row_ix];
-        let col = &self.cols[col_ix];
-
-        match col.key.as_ref() {
-            "offset" => row.offset.to_string(),
-            "name" => row.name.clone(),
-            "value" => row.value.to_string(),
-            "meaning" => row.meaning.clone(),
-            _ => "".to_string(),
-        }
-    }
+    dos_table: HeaderTable,
+    dos_stub_hexview: Hexview,
+    dos_ascii_view: AsciiView,
+    file_header_table: HeaderTable,
+    opt_header_table: HeaderTable,
 }
 
 impl Info {
@@ -89,17 +39,20 @@ impl Info {
             .hover(cx.theme().background)
             .active(cx.theme().accent);
 
-        let dos_header_table = DosHeaderTable::new(vec![]);
-        let dos_table_state = cx.new(|cx| TableState::new(dos_header_table, window, cx));
         Self {
             pe_header: None,
             custom_btn: custom_button,
-            table_state: dos_table_state,
+            dos_table: HeaderTable::new(window, cx),
+            file_header_table: HeaderTable::new(window, cx),
+            opt_header_table: HeaderTable::new(window, cx),
+            dos_stub_hexview: Hexview::new(window, cx),
+            dos_ascii_view: AsciiView::new(vec![], cx),
         }
     }
     pub fn render_route(&self, cx: &mut Context<RustDump>, app: &RustDump) -> AnyElement {
         let sidebar = div()
             .v_flex()
+            .text_left()
             .child(
                 div()
                     .h_flex()
@@ -141,42 +94,90 @@ impl Info {
                     .h_flex()
                     .child(
                         Button::new("nt_headers")
+                            .dropdown_caret(true)
                             .on_click(cx.listener(|app, _event, _window, _cx| {
-                                app.info_page = InfoDisplayPage::NTHeaders;
+                                app.expand_nt = !app.expand_nt;
                             }))
                             .child(
                                 Icon::new(Icon::empty())
                                     .path("icons/list-tree.svg")
                                     .text_color(cx.theme().foreground),
                             )
-                            .child("NT Headers")
+                            .child("NT Hdrs")
                             .custom(self.custom_btn),
                     )
                     .gap_2(),
             )
             .child(
                 div()
+                    .ml_2()
+                    .flex()
+                    .text_left()
+                    .justify_start()
+                    .child(if app.expand_nt {
+                        div().children(vec![
+                            Button::new("file_header")
+                                .flex()
+                                .justify_start()
+                                .text_left()
+                                .on_click(cx.listener(|app, _event, _window, _cx| {
+                                    app.info_page = InfoDisplayPage::FileHdr;
+                                }))
+                                .child(
+                                    Icon::new(Icon::empty())
+                                        .path("icons/file-spreadsheet.svg")
+                                        .text_color(cx.theme().foreground),
+                                )
+                                .child("File Hdr")
+                                .custom(self.custom_btn),
+                            Button::new("opt_header")
+                                .flex()
+                                .justify_start()
+                                .text_left()
+                                .on_click(cx.listener(|app, _event, _window, _cx| {
+                                    app.info_page = InfoDisplayPage::OptHdr;
+                                }))
+                                .child(
+                                    Icon::new(Icon::empty())
+                                        .path("icons/file-spreadsheet.svg")
+                                        .text_color(cx.theme().foreground),
+                                )
+                                .child("Optional Hdr")
+                                .custom(self.custom_btn),
+                        ])
+                    } else {
+                        div()
+                    }),
+            )
+            .child(
+                div()
                     .h_flex()
                     .child(
                         Button::new("section_headers")
+                            .dropdown_caret(true)
                             .on_click(cx.listener(|app, _event, _window, _cx| {
-                                app.info_page = InfoDisplayPage::SectionHeaders;
+                                app.expand_section = !app.expand_section;
                             }))
                             .child(
                                 Icon::new(Icon::empty())
                                     .path("icons/list-tree.svg")
                                     .text_color(cx.theme().foreground),
                             )
-                            .child("Section Headers")
+                            .child("Section Hdrs")
                             .custom(self.custom_btn),
                     )
                     .gap_2(),
-            );
+            )
+            .child(if app.expand_section {
+                div().children(vec![""])
+            } else {
+                div()
+            });
 
         div()
             .h_flex()
             .font_family(SharedString::from("Diodrum Cyrillic"))
-            .pl_3()
+            .pl_1()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -189,14 +190,24 @@ impl Info {
                     .border_color(cx.theme().sidebar_border)
                     .child(sidebar),
             )
-            .child(div().size_full().child(match app.info_page {
-                InfoDisplayPage::DOSHeaders => {
-                    div().child(Table::new(&self.table_state)).size_full()
-                }
-                InfoDisplayPage::DOSStub => div().child("DOS Stub"),
-                InfoDisplayPage::NTHeaders => div().child("NT Headers"),
-                InfoDisplayPage::SectionHeaders => div().child("Section Headers"),
-            }))
+            .child(
+                div().size_full().child(match app.info_page {
+                    InfoDisplayPage::DOSHeaders => div().child(self.dos_table.render()).size_full(),
+                    InfoDisplayPage::DOSStub => div()
+                        .grid()
+                        .grid_cols(4)
+                        .grid_rows(1)
+                        .child(div().child(self.dos_stub_hexview.render()).col_span(3))
+                        .child(div().child(self.dos_ascii_view.render(cx)))
+                        .size_full(),
+                    InfoDisplayPage::FileHdr => {
+                        div().child(self.file_header_table.render()).size_full()
+                    }
+                    InfoDisplayPage::OptHdr => {
+                        div().child(self.opt_header_table.render()).size_full()
+                    }
+                }),
+            )
             .into_any_element()
     }
 
@@ -214,19 +225,72 @@ impl Info {
 
         let data = dos_header_obj
             .iter()
-            .map(|(k, v)| DosHeaderData {
-                offset: 0,
-                name: k.clone(),
-                value: v.clone(),
-                meaning: String::from("Test"),
+            .enumerate()
+            .map(|(i, (k, v))| {
+                let mut offset = String::new();
+                let offset_bytes = ImageDosHeader::get_offset(i).unwrap_or(0).to_be_bytes();
+                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
+                return HeaderData {
+                    offset,
+                    name: k.clone(),
+                    value: v.clone(),
+                    meaning: String::from("Test"),
+                };
             })
             .collect();
 
-        println!("{:?}", data);
-        let dos_delegate = DosHeaderTable::new(data);
-        self.table_state = cx.new(|cx| TableState::new(dos_delegate, window, cx));
+        self.dos_table.load(data, window, cx);
 
-        //self.dos_header_table = DosHeaderTable::new();
+        let file_header = serde_json::to_value(&pe_header.nt_header.image_file_header);
+        let Ok(file_header) = file_header else { return };
+        let serde_json::Value::Object(file_header_obj) = file_header else {
+            return;
+        };
+
+        let data = file_header_obj
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| {
+                let mut offset = String::new();
+                let offset_bytes = ImageFileHeader::get_offset(i).unwrap_or(0).to_be_bytes();
+                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
+                return HeaderData {
+                    offset,
+                    name: k.clone(),
+                    value: v.clone(),
+                    meaning: String::from("Test"),
+                };
+            })
+            .collect();
+
+        self.file_header_table.load(data, window, cx);
+
+        let opt_header = serde_json::to_value(&pe_header.nt_header.optional_headers);
+        let Ok(opt_header) = opt_header else { return };
+        let serde_json::Value::Object(opt_header_obj) = opt_header else {
+            return;
+        };
+
+        // TODO: Handle both OptionalHeaders32 and OptionalHeaders64
+
+        let data = opt_header_obj
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| {
+                let mut offset = String::new();
+                let offset_bytes = [0, 0, 0, 0];
+                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
+                return HeaderData {
+                    offset,
+                    name: k.clone(),
+                    value: v.clone(),
+                    meaning: String::from("Test"),
+                };
+            })
+            .collect();
+
+        self.opt_header_table.load(data, window, cx);
+
         self.pe_header = Some(pe_header);
     }
 }
@@ -238,5 +302,10 @@ impl Route for Info {
 
     fn load(&mut self, cx: &mut Context<RustDump>, window: &mut Window, path: &Path) {
         self.load_file(path, cx, window);
+        if let Some(pe_header) = &self.pe_header {
+            self.dos_stub_hexview
+                .load_data(pe_header.dos_stub.clone(), window, cx);
+            self.dos_ascii_view = AsciiView::new(pe_header.dos_stub.clone(), cx);
+        }
     }
 }

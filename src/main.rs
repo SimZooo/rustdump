@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::routes::{hexdump::hexdump::Hexdump, info::info::Info, starting::starting::Starting};
+use crate::{
+    assets::{CombinedAssets, CustomAssets},
+    routes::{hexdump::hexdump::Hexdump, info::info::Info, starting::starting::Starting},
+};
 use gpui::{
     AnyElement, App, Application, AssetSource, Bounds, Context, DefiniteLength, FocusHandle,
     Focusable, KeyBinding, SharedString, Window, WindowBounds, WindowOptions, actions, div,
@@ -15,16 +18,11 @@ use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
 };
 
+mod assets;
+mod components;
 mod routes;
 
 actions!(rustdump, [OpenFile]);
-
-#[derive(rust_embed::RustEmbed)]
-#[folder = "assets"]
-#[include = "icons/**/*.svg"]
-#[include = "images/**/*.png"]
-#[include = "fonts/**/*.ttf"]
-pub struct Assets;
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum RouteName {
@@ -36,8 +34,8 @@ pub enum RouteName {
 pub enum InfoDisplayPage {
     DOSHeaders,
     DOSStub,
-    NTHeaders,
-    SectionHeaders,
+    FileHdr,
+    OptHdr,
 }
 
 pub trait Route {
@@ -52,6 +50,8 @@ pub struct RustDump {
     pub curr_file: Option<PathBuf>,
     pub custom_button: ButtonCustomVariant,
     pub info_page: InfoDisplayPage,
+    pub expand_nt: bool,
+    pub expand_section: bool,
 }
 
 impl RustDump {
@@ -77,6 +77,8 @@ impl RustDump {
             focus_handle: cx.focus_handle(),
             curr_file: None,
             custom_button,
+            expand_section: false,
+            expand_nt: false,
         }
     }
 
@@ -159,38 +161,20 @@ impl Render for RustDump {
     }
 }
 
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        if path.is_empty() {
-            return Ok(None);
-        }
-
-        Self::get(path)
-            .map(|f| Some(f.data))
-            .ok_or_else(|| anyhow::anyhow!("could not find asset at path \"{path}\""))
-    }
-
-    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(Self::iter()
-            .filter_map(|p| p.starts_with(path).then(|| p.into()))
-            .collect())
-    }
-}
-
 fn main() {
-    Application::new().with_assets(Assets).run(|cx: &mut App| {
+    let assets = CombinedAssets::new();
+    assets.load("icons/file-text.svg").unwrap().unwrap();
+    assets.load("icons/file-spreadsheet.svg").unwrap().unwrap();
+    assets.load("icons/list-tree.svg").unwrap().unwrap();
+    let font = assets
+        .load("fonts/DiodrumCyrillic-Regular.ttf")
+        .unwrap()
+        .unwrap();
+    Application::new().with_assets(assets).run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1920.), px(1080.)), cx);
         cx.bind_keys(vec![KeyBinding::new("ctrl-o", OpenFile, None)]);
-        Assets.load("icons/file-text.svg").unwrap().unwrap();
-        Assets.load("icons/file-spreadsheet.svg").unwrap().unwrap();
-        Assets.load("icons/list-tree.svg").unwrap().unwrap();
 
-        let _ = cx.text_system().add_fonts(vec![
-            Assets
-                .load("fonts/DiodrumCyrillic-Regular.ttf")
-                .unwrap()
-                .unwrap(),
-        ]);
+        let _ = cx.text_system().add_fonts(vec![font]);
 
         gpui_component::init(cx);
         gpui_component::Theme::change(ThemeMode::Dark, None, cx);
