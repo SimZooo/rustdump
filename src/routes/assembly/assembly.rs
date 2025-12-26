@@ -1,20 +1,10 @@
 use std::{ops::Range, path::Path, rc::Rc};
 
 use gpui::{
-    AnyElement, Background, Context, Div, Entity, HighlightStyle, Pixels, SharedString, Size,
-    Window, div, prelude::*, px, size,
+    AnyElement, Div, HighlightStyle, Pixels, SharedString, Size, Window, div, prelude::*, px, size,
 };
-use gpui_component::{
-    ActiveTheme, Rope, VirtualListScrollHandle, highlighter::SyntaxHighlighter, input::InputState,
-    scroll::Scrollbar, v_virtual_list, white,
-};
+use gpui_component::{ActiveTheme, VirtualListScrollHandle, scroll::Scrollbar, v_virtual_list};
 use iced_x86::{SpecializedFormatter, SpecializedFormatterTraitOptions};
-
-struct AssemblyEditor {
-    editor: Entity<InputState>,
-}
-
-impl AssemblyEditor {}
 
 use crate::{Route, RustDump};
 use rd_core;

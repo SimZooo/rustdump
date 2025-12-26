@@ -42,6 +42,7 @@ pub enum InfoDisplayPage {
     DOSStub,
     FileHdr,
     OptHdr,
+    Section(String),
 }
 
 pub trait Route {
@@ -57,6 +58,7 @@ pub struct RustDump {
     pub custom_button: ButtonCustomVariant,
     pub info_page: InfoDisplayPage,
     pub expand_nt: bool,
+    pub expand_sct: bool,
     pub expand_section: bool,
     pub assembly_data: Vec<String>,
     pub titlebar: AppTitlebar,
@@ -88,6 +90,7 @@ impl RustDump {
             custom_button,
             expand_section: false,
             expand_nt: false,
+            expand_sct: false,
             assembly_data: vec![],
         }
     }

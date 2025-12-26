@@ -51,6 +51,7 @@ pub struct Info {
     file_header_table: HeaderTable,
     opt_header_table: HeaderTable,
     data_dir_table: HeaderTable,
+    sections: Vec<String>,
 }
 
 impl Info {
@@ -71,6 +72,7 @@ impl Info {
             dos_stub_hexview: Hexview::new(window, cx),
             dos_ascii_view: AsciiView::new(vec![], cx),
             data_dir_table: HeaderTable::new(window, cx),
+            sections: vec![],
         }
     }
     pub fn render_route(&self, cx: &mut Context<RustDump>, app: &RustDump) -> AnyElement {
@@ -193,7 +195,23 @@ impl Info {
                     .gap_2(),
             )
             .child(if app.expand_section {
-                div().children(vec![""])
+                div().children(self.sections.iter().map(|sct| {
+                    let section = sct.clone();
+                    Button::new(SharedString::new(sct.to_lowercase().as_str()))
+                        .flex()
+                        .justify_start()
+                        .text_left()
+                        .on_click(cx.listener(move |app, _event, _window, _cx| {
+                            app.info_page = InfoDisplayPage::Section(section.clone());
+                        }))
+                        .child(
+                            Icon::new(Icon::empty())
+                                .path("icons/file-spreadsheet.svg")
+                                .text_color(cx.theme().foreground),
+                        )
+                        .child(SharedString::new(sct.as_str()))
+                        .custom(self.custom_btn)
+                }))
             } else {
                 div()
             });
@@ -215,7 +233,7 @@ impl Info {
                     .child(sidebar),
             )
             .child(
-                div().size_full().child(match app.info_page {
+                div().size_full().child(match &app.info_page {
                     InfoDisplayPage::DOSHeaders => div().child(self.dos_table.render()).size_full(),
                     InfoDisplayPage::DOSStub => div()
                         .grid()
@@ -238,6 +256,9 @@ impl Info {
                         .child(self.opt_header_table.render())
                         .child(self.data_dir_table.render())
                         .size_full(),
+                    InfoDisplayPage::Section(sct) => {
+                        div().child(SharedString::new(sct.clone().as_str()))
+                    }
                 }),
             )
             .into_any_element()
@@ -249,6 +270,11 @@ impl Info {
         };
 
         let pe_header = pe_parse::parse_pe_header(&bytes[..]).unwrap();
+        let mut sections = vec![];
+        for hdr in pe_header.section_headers.iter() {
+            sections.push(String::from_utf8_lossy(&hdr.name).to_string());
+        }
+        self.sections = sections;
 
         // Load DOS header
         let dos_header = serde_json::to_value(&pe_header.dos_header);
