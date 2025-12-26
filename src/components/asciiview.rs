@@ -1,5 +1,8 @@
-use gpui::{AnyElement, Context, Div, IntoElement, ParentElement, SharedString, Styled, div};
-use gpui_component::ActiveTheme;
+use gpui::{
+    AnyElement, Context, DefiniteLength, Div, IntoElement, ParentElement, SharedString, Styled,
+    div, px, rems,
+};
+use gpui_component::{ActiveTheme, Size};
 
 use crate::RustDump;
 
@@ -23,6 +26,10 @@ impl AsciiView {
     }
 
     pub fn render(&self, cx: &Context<RustDump>) -> impl IntoElement {
-        div().grid().grid_cols(16).children(self.rows.clone())
+        div()
+            .grid()
+            .grid_cols(16)
+            .children(self.rows.clone())
+            .line_height(rems(2.))
     }
 }

@@ -1,5 +1,8 @@
 use gpui::{App, AppContext, Context, Entity, IntoElement, Window};
-use gpui_component::table::{Column, Table, TableDelegate, TableState};
+use gpui_component::{
+    Sizable,
+    table::{Column, Table, TableDelegate, TableState},
+};
 use serde_json::Value;
 
 use crate::RustDump;
@@ -44,10 +47,18 @@ impl HeaderTableDelegate {
         Self {
             data,
             cols: vec![
-                Column::new("offset", "Offset".to_string()).resizable(true),
-                Column::new("name", "Name".to_string()).resizable(true),
-                Column::new("value", "Value".to_string()).resizable(true),
-                Column::new("meaning", "Meaning".to_string()).resizable(true),
+                Column::new("offset", "Offset".to_string())
+                    .resizable(true)
+                    .width(75.),
+                Column::new("name", "Name".to_string())
+                    .resizable(true)
+                    .width(150.),
+                Column::new("value", "Value".to_string())
+                    .resizable(true)
+                    .width(250.),
+                Column::new("meaning", "Meaning".to_string())
+                    .resizable(true)
+                    .width(175.),
             ],
         }
     }

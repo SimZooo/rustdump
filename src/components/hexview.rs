@@ -80,7 +80,13 @@ impl Hexview {
         Table::new(&self.state).bordered(false).stripe(false)
     }
 
-    pub fn load_data(&mut self, data: Vec<u8>, window: &mut Window, cx: &mut Context<RustDump>) {
+    pub fn load_data(
+        &mut self,
+        data: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<RustDump>,
+        idx_offset: u16,
+    ) {
         let chunks = data.chunks(16);
         let hex_data = chunks
             .into_iter()
@@ -98,7 +104,7 @@ impl Hexview {
             .enumerate()
             .map(|(i, d)| {
                 let mut offset = String::new();
-                (i as u16 * 16)
+                (i as u16 * 16 + idx_offset)
                     .to_be_bytes()
                     .iter()
                     .for_each(|b| push_hex(&mut offset, *b));

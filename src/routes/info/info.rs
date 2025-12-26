@@ -1,4 +1,22 @@
 use std::{fs, path::Path};
+const DIR_NAMES: [&str; 16] = [
+    "Export Directory",
+    "Import Directory",
+    "Resource Directory",
+    "Exception Directory",
+    "Security Directory",
+    "Base Relocation Directory",
+    "Debug Directory",
+    "Architecture Directory",
+    "Global Pointer Directory",
+    "TLS Directory",
+    "Load Configuration Directory",
+    "Bound Import Directory",
+    "Import Address Table Directory",
+    "Delay Import Directory",
+    "COM Descriptor Directory",
+    "Reserved Directory",
+];
 
 use gpui::{
     AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div,
@@ -8,8 +26,12 @@ use gpui_component::{
     ActiveTheme, Icon, StyledExt,
     button::{Button, ButtonCustomVariant, ButtonVariants},
 };
-use pe_parse::{ImageDosHeader, ImageFileHeader, OptionalHeaders};
+use pe_parse::{
+    ImageDataDirectory, ImageDosHeader, ImageFileHeader, OptionalHeaders, OptionalHeaders32,
+    OptionalHeaders64,
+};
 use rd_core::push_hex;
+use serde_json::{Map, Value};
 
 use crate::{
     InfoDisplayPage, Route, RustDump,
@@ -28,6 +50,7 @@ pub struct Info {
     dos_ascii_view: AsciiView,
     file_header_table: HeaderTable,
     opt_header_table: HeaderTable,
+    data_dir_table: HeaderTable,
 }
 
 impl Info {
@@ -47,6 +70,7 @@ impl Info {
             opt_header_table: HeaderTable::new(window, cx),
             dos_stub_hexview: Hexview::new(window, cx),
             dos_ascii_view: AsciiView::new(vec![], cx),
+            data_dir_table: HeaderTable::new(window, cx),
         }
     }
     pub fn render_route(&self, cx: &mut Context<RustDump>, app: &RustDump) -> AnyElement {
@@ -198,14 +222,22 @@ impl Info {
                         .grid_cols(4)
                         .grid_rows(1)
                         .child(div().child(self.dos_stub_hexview.render()).col_span(3))
-                        .child(div().child(self.dos_ascii_view.render(cx)))
+                        .child(
+                            div()
+                                .child(self.dos_ascii_view.render(cx))
+                                .mt(gpui::rems(2.)),
+                        )
                         .size_full(),
                     InfoDisplayPage::FileHdr => {
                         div().child(self.file_header_table.render()).size_full()
                     }
-                    InfoDisplayPage::OptHdr => {
-                        div().child(self.opt_header_table.render()).size_full()
-                    }
+                    InfoDisplayPage::OptHdr => div()
+                        .grid()
+                        .grid_cols(2)
+                        .grid_rows(1)
+                        .child(self.opt_header_table.render())
+                        .child(self.data_dir_table.render())
+                        .size_full(),
                 }),
             )
             .into_any_element()
@@ -217,79 +249,83 @@ impl Info {
         };
 
         let pe_header = pe_parse::parse_pe_header(&bytes[..]).unwrap();
+
+        // Load DOS header
         let dos_header = serde_json::to_value(&pe_header.dos_header);
         let Ok(dos_header) = dos_header else { return };
-        let serde_json::Value::Object(dos_header_obj) = dos_header else {
-            return;
-        };
-
-        let data = dos_header_obj
-            .iter()
-            .enumerate()
-            .map(|(i, (k, v))| {
-                let mut offset = String::new();
-                let offset_bytes = ImageDosHeader::get_offset(i).unwrap_or(0).to_be_bytes();
-                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
-                return HeaderData {
-                    offset,
-                    name: k.clone(),
-                    value: v.clone(),
-                    meaning: String::from("Test"),
-                };
-            })
-            .collect();
+        let data = parse_data(dos_header, |idx| {
+            let mut offset_string = String::new();
+            let offset_bytes = ImageDosHeader::get_offset(idx).unwrap_or(0).to_be_bytes();
+            offset_bytes
+                .iter()
+                .for_each(|b| push_hex(&mut offset_string, *b));
+            offset_string
+        });
 
         self.dos_table.load(data, window, cx);
 
+        // Load file header
         let file_header = serde_json::to_value(&pe_header.nt_header.image_file_header);
         let Ok(file_header) = file_header else { return };
-        let serde_json::Value::Object(file_header_obj) = file_header else {
-            return;
-        };
-
-        let data = file_header_obj
-            .iter()
-            .enumerate()
-            .map(|(i, (k, v))| {
-                let mut offset = String::new();
-                let offset_bytes = ImageFileHeader::get_offset(i).unwrap_or(0).to_be_bytes();
-                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
-                return HeaderData {
-                    offset,
-                    name: k.clone(),
-                    value: v.clone(),
-                    meaning: String::from("Test"),
-                };
-            })
-            .collect();
+        let data = parse_data(file_header, |idx| {
+            let mut offset_string = String::new();
+            let offset_bytes = ImageFileHeader::get_offset(idx)
+                .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16))
+                .unwrap_or(0)
+                .to_be_bytes();
+            offset_bytes
+                .iter()
+                .for_each(|b| push_hex(&mut offset_string, *b));
+            offset_string
+        });
 
         self.file_header_table.load(data, window, cx);
 
-        let opt_header = serde_json::to_value(&pe_header.nt_header.optional_headers);
-        let Ok(opt_header) = opt_header else { return };
-        let serde_json::Value::Object(opt_header_obj) = opt_header else {
-            return;
-        };
+        // Load OPT headers
+        match pe_header.nt_header.optional_headers {
+            OptionalHeaders::OptionalHeaders32(opt32) => {
+                let opt_header = serde_json::to_value(&opt32);
+                let Ok(opt_header) = opt_header else { return };
 
-        // TODO: Handle both OptionalHeaders32 and OptionalHeaders64
+                let dir_data =
+                    parse_data_directory_from_array(&opt32.data_directory, |idx| idx.to_string());
+                self.data_dir_table.load(dir_data, window, cx);
 
-        let data = opt_header_obj
-            .iter()
-            .enumerate()
-            .map(|(i, (k, v))| {
-                let mut offset = String::new();
-                let offset_bytes = [0, 0, 0, 0];
-                offset_bytes.iter().for_each(|b| push_hex(&mut offset, *b));
-                return HeaderData {
-                    offset,
-                    name: k.clone(),
-                    value: v.clone(),
-                    meaning: String::from("Test"),
-                };
-            })
-            .collect();
+                let data = parse_data(opt_header, |idx| {
+                    let mut offset_string = String::new();
+                    let offset_bytes = OptionalHeaders32::get_offset(idx)
+                        .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16 + 24))
+                        .unwrap_or(0)
+                        .to_be_bytes();
+                    offset_bytes
+                        .iter()
+                        .for_each(|b| push_hex(&mut offset_string, *b));
+                    offset_string
+                });
+                self.opt_header_table.load(data, window, cx);
+            }
+            OptionalHeaders::OptionalHeaders64(opt64) => {
+                let opt_header = serde_json::to_value(&opt64);
+                let Ok(opt_header) = opt_header else { return };
 
-        self.opt_header_table.load(data, window, cx);
+                let dir_data =
+                    parse_data_directory_from_array(&opt64.data_directory, |idx| idx.to_string());
+                self.data_dir_table.load(dir_data, window, cx);
+
+                let data = parse_data(opt_header, |idx| {
+                    let mut offset_string = String::new();
+                    let offset_bytes = OptionalHeaders64::get_offset(idx)
+                        .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16 + 24))
+                        .unwrap_or(0)
+                        .to_be_bytes();
+                    offset_bytes
+                        .iter()
+                        .for_each(|b| push_hex(&mut offset_string, *b));
+                    offset_string
+                });
+                self.opt_header_table.load(data, window, cx);
+            }
+        }
 
         self.pe_header = Some(pe_header);
     }
@@ -304,8 +340,59 @@ impl Route for Info {
         self.load_file(path, cx, window);
         if let Some(pe_header) = &self.pe_header {
             self.dos_stub_hexview
-                .load_data(pe_header.dos_stub.clone(), window, cx);
+                .load_data(pe_header.dos_stub.clone(), window, cx, 64);
             self.dos_ascii_view = AsciiView::new(pe_header.dos_stub.clone(), cx);
         }
     }
+}
+
+fn parse_data(
+    data_value: Value,
+    //data_chunk: Map<String, Value>,
+    offset_fn: impl Fn(usize) -> String,
+) -> Vec<HeaderData> {
+    let serde_json::Value::Object(data_chunk) = data_value else {
+        return vec![];
+    };
+
+    data_chunk
+        .iter()
+        .enumerate()
+        .map(|(i, (k, v))| {
+            let offset = offset_fn(i);
+            return HeaderData {
+                offset,
+                name: k.clone(),
+                value: v.clone(),
+                meaning: String::from("Test"),
+            };
+        })
+        .collect()
+}
+
+fn parse_data_directory_from_array(
+    data_directory: &[ImageDataDirectory; 16],
+    offset_fn: impl Fn(usize) -> String,
+) -> Vec<HeaderData> {
+    data_directory
+        .iter()
+        .enumerate()
+        .map(|(i, dir)| {
+            let dir_name = DIR_NAMES.get(i).copied().unwrap_or("Unknown Directory");
+
+            HeaderData {
+                offset: offset_fn(i),
+                name: dir_name.to_string(),
+                value: Value::String(format!(
+                    "VA: 0x{:08X}, Size: {} (0x{:X})",
+                    dir.virtual_address, dir.size, dir.size
+                )),
+                meaning: if dir.virtual_address == 0 && dir.size == 0 {
+                    "Not present".to_string()
+                } else {
+                    "Present".to_string()
+                },
+            }
+        })
+        .collect()
 }

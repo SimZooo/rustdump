@@ -6,16 +6,21 @@ use std::{
 
 use crate::{
     assets::{CombinedAssets, CustomAssets},
-    routes::{hexdump::hexdump::Hexdump, info::info::Info, starting::starting::Starting},
+    components::titlebar::AppTitlebar,
+    routes::{
+        assembly::assembly::Assembly, hexdump::hexdump::Hexdump, info::info::Info,
+        starting::starting::Starting,
+    },
 };
 use gpui::{
-    AnyElement, App, Application, AssetSource, Bounds, Context, DefiniteLength, FocusHandle,
-    Focusable, KeyBinding, SharedString, Window, WindowBounds, WindowOptions, actions, div,
-    prelude::*, px, size, transparent_black,
+    AnyElement, App, Application, AssetSource, Bounds, Context, DefiniteLength, Entity,
+    FocusHandle, Focusable, KeyBinding, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, actions, div, prelude::*, px, size, transparent_black,
 };
 use gpui_component::{
-    ActiveTheme, StyledExt, ThemeMode,
+    ActiveTheme, Root, StyledExt, ThemeMode, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
+    input::{Input, InputState},
 };
 
 mod assets;
@@ -29,6 +34,7 @@ pub enum RouteName {
     Starting,
     Info,
     Hexdump,
+    Assembly,
 }
 
 pub enum InfoDisplayPage {
@@ -52,6 +58,8 @@ pub struct RustDump {
     pub info_page: InfoDisplayPage,
     pub expand_nt: bool,
     pub expand_section: bool,
+    pub assembly_data: Vec<String>,
+    pub titlebar: AppTitlebar,
 }
 
 impl RustDump {
@@ -61,8 +69,8 @@ impl RustDump {
         routes.insert(RouteName::Starting, Box::new(Starting::new()));
         routes.insert(RouteName::Info, Box::new(Info::new(window, cx)));
         routes.insert(RouteName::Hexdump, Box::new(Hexdump::new(window, cx)));
+        routes.insert(RouteName::Assembly, Box::new(Assembly::new(window, cx)));
 
-        // Set up key handler HERE, not in render
         let custom_button = ButtonCustomVariant::new(cx)
             .color(cx.theme().background)
             .foreground(cx.theme().foreground)
@@ -76,22 +84,22 @@ impl RustDump {
             current_route: RouteName::Starting,
             focus_handle: cx.focus_handle(),
             curr_file: None,
+            titlebar: AppTitlebar::new(custom_button.clone()),
             custom_button,
             expand_section: false,
             expand_nt: false,
+            assembly_data: vec![],
         }
     }
 
     fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let path = rfd::FileDialog::new().pick_file();
         if let Some(path) = path {
-            // Load file into current route and change hashmap-value
             self.current_route = RouteName::Info;
 
-            // Load all paths
-            self.routes
-                .values_mut()
-                .for_each(|route| route.load(cx, window, &path));
+            for (_, route) in &mut self.routes {
+                route.load(cx, window, &path)
+            }
 
             self.curr_file = Some(path);
 
@@ -107,7 +115,7 @@ impl Focusable for RustDump {
 }
 
 impl Render for RustDump {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
             .track_focus(&self.focus_handle)
@@ -115,43 +123,7 @@ impl Render for RustDump {
             .on_action(cx.listener(Self::open_file))
             .size_full()
             .text_color(cx.theme().foreground)
-            .child(
-                div()
-                    .h_flex()
-                    .w_full()
-                    .h_8()
-                    .border_b_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .bg(cx.theme().background)
-                    .font_family("Diodrum Cyrillic")
-                    .child(
-                        Button::new("info")
-                            .child("Info")
-                            .on_click(cx.listener(|app, _event, _window, cx| {
-                                app.current_route = RouteName::Info;
-                                cx.notify();
-                            }))
-                            .custom(self.custom_button)
-                            .px_6(),
-                    )
-                    .child(
-                        div()
-                            .h(DefiniteLength::Fraction(0.6))
-                            .w_1()
-                            .border_l_1()
-                            .border_color(cx.theme().sidebar_border),
-                    )
-                    .child(
-                        Button::new("hexdump")
-                            .child("Hexdump")
-                            .on_click(cx.listener(|app, _event, _window, cx| {
-                                app.current_route = RouteName::Hexdump;
-                                cx.notify();
-                            }))
-                            .custom(self.custom_button)
-                            .px_6(),
-                    ),
-            )
+            .child(self.titlebar.render(window, cx))
             .child(
                 div()
                     .v_flex()
@@ -185,15 +157,18 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    //titlebar: Some(TitleBar::title_bar_options()),
                     ..Default::default()
                 },
-                |window, cx| cx.new(|cx| RustDump::new(cx, window)),
+                |window, cx| {
+                    let view = cx.new(|cx| RustDump::new(cx, window));
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
             )
             .unwrap();
 
         window
-            .update(cx, |rust_dump, window, cx| {
-                window.focus(&rust_dump.focus_handle(cx));
+            .update(cx, |root, window, cx| {
                 cx.activate(true);
             })
             .unwrap();
