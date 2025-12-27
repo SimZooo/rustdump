@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 const DIR_NAMES: [&str; 16] = [
     "Export Directory",
     "Import Directory",
@@ -28,10 +28,11 @@ use gpui_component::{
 };
 use pe_parse::{
     ImageDataDirectory, ImageDosHeader, ImageFileHeader, OptionalHeaders, OptionalHeaders32,
-    OptionalHeaders64,
+    OptionalHeaders64, SectionHeader,
 };
 use rd_core::push_hex;
-use serde_json::{Map, Value};
+use section_hdrs_table::SectionsTable;
+use serde_json::Value;
 
 use crate::{
     InfoDisplayPage, Route, RustDump,
@@ -40,6 +41,7 @@ use crate::{
         headertable::{HeaderData, HeaderTable},
         hexview::Hexview,
     },
+    routes::info::section_hdrs_table,
 };
 
 pub struct Info {
@@ -51,7 +53,8 @@ pub struct Info {
     file_header_table: HeaderTable,
     opt_header_table: HeaderTable,
     data_dir_table: HeaderTable,
-    sections: Vec<String>,
+    sections: HashMap<SharedString, SectionHeader>,
+    section_headers_table: SectionsTable,
 }
 
 impl Info {
@@ -72,7 +75,8 @@ impl Info {
             dos_stub_hexview: Hexview::new(window, cx),
             dos_ascii_view: AsciiView::new(vec![], cx),
             data_dir_table: HeaderTable::new(window, cx),
-            sections: vec![],
+            sections: HashMap::new(),
+            section_headers_table: SectionsTable::new(window, cx),
         }
     }
     pub fn render_route(&self, cx: &mut Context<RustDump>, app: &RustDump) -> AnyElement {
@@ -179,7 +183,26 @@ impl Info {
                 div()
                     .h_flex()
                     .child(
-                        Button::new("section_headers")
+                        Button::new("section_hdrs")
+                            .size_full()
+                            .on_click(cx.listener(|app, _event, _window, _cx| {
+                                app.info_page = InfoDisplayPage::SectionHeaders;
+                            }))
+                            .child(
+                                Icon::new(Icon::empty())
+                                    .path("icons/file-spreadsheet.svg")
+                                    .text_color(cx.theme().foreground),
+                            )
+                            .child("Section Hdrs")
+                            .custom(self.custom_btn),
+                    )
+                    .gap_2(),
+            )
+            /*.child(
+                div()
+                    .h_flex()
+                    .child(
+                        Button::new("sections")
                             .dropdown_caret(true)
                             .on_click(cx.listener(|app, _event, _window, _cx| {
                                 app.expand_section = !app.expand_section;
@@ -189,29 +212,31 @@ impl Info {
                                     .path("icons/list-tree.svg")
                                     .text_color(cx.theme().foreground),
                             )
-                            .child("Section Hdrs")
+                            .child("Sections")
                             .custom(self.custom_btn),
                     )
                     .gap_2(),
-            )
+            )*/
             .child(if app.expand_section {
-                div().children(self.sections.iter().map(|sct| {
-                    let section = sct.clone();
-                    Button::new(SharedString::new(sct.to_lowercase().as_str()))
-                        .flex()
-                        .justify_start()
-                        .text_left()
-                        .on_click(cx.listener(move |app, _event, _window, _cx| {
-                            app.info_page = InfoDisplayPage::Section(section.clone());
-                        }))
-                        .child(
-                            Icon::new(Icon::empty())
-                                .path("icons/file-spreadsheet.svg")
-                                .text_color(cx.theme().foreground),
-                        )
-                        .child(SharedString::new(sct.as_str()))
-                        .custom(self.custom_btn)
-                }))
+                div()
+                    .ml_2()
+                    .children(self.sections.iter().map(|(sct_name, sct)| {
+                        let sct_name_cl = sct_name.clone();
+                        Button::new(sct_name.clone())
+                            .flex()
+                            .justify_start()
+                            .text_left()
+                            .on_click(cx.listener(move |app, _event, _window, _cx| {
+                                app.info_page = InfoDisplayPage::Section(sct_name_cl.clone());
+                            }))
+                            .child(
+                                Icon::new(Icon::empty())
+                                    .path("icons/file-spreadsheet.svg")
+                                    .text_color(cx.theme().foreground),
+                            )
+                            .child(sct_name.clone())
+                            .custom(self.custom_btn)
+                    }))
             } else {
                 div()
             });
@@ -259,6 +284,9 @@ impl Info {
                     InfoDisplayPage::Section(sct) => {
                         div().child(SharedString::new(sct.clone().as_str()))
                     }
+                    InfoDisplayPage::SectionHeaders => {
+                        div().size_full().child(self.section_headers_table.render())
+                    }
                 }),
             )
             .into_any_element()
@@ -270,43 +298,47 @@ impl Info {
         };
 
         let pe_header = pe_parse::parse_pe_header(&bytes[..]).unwrap();
-        let mut sections = vec![];
-        for hdr in pe_header.section_headers.iter() {
-            sections.push(String::from_utf8_lossy(&hdr.name).to_string());
-        }
-        self.sections = sections;
 
         // Load DOS header
         let dos_header = serde_json::to_value(&pe_header.dos_header);
         let Ok(dos_header) = dos_header else { return };
-        let data = parse_data(dos_header, |idx| {
-            let mut offset_string = String::new();
-            let offset_bytes = ImageDosHeader::get_offset(idx).unwrap_or(0).to_be_bytes();
-            offset_bytes
-                .iter()
-                .for_each(|b| push_hex(&mut offset_string, *b));
-            offset_string
-        });
+        let data = parse_data(
+            dos_header,
+            |idx| {
+                let mut offset_string = String::new();
+                let offset_bytes = ImageDosHeader::get_offset(idx).unwrap_or(0).to_le_bytes();
+                offset_bytes
+                    .iter()
+                    .for_each(|b| push_hex(&mut offset_string, *b));
+                offset_string
+            },
+            pe_parse::DOS_HEADER_MEANINGS.to_vec(),
+        );
 
         self.dos_table.load(data, window, cx);
 
         // Load file header
         let file_header = serde_json::to_value(&pe_header.nt_header.image_file_header);
         let Ok(file_header) = file_header else { return };
-        let data = parse_data(file_header, |idx| {
-            let mut offset_string = String::new();
-            let offset_bytes = ImageFileHeader::get_offset(idx)
-                .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16))
-                .unwrap_or(0)
-                .to_be_bytes();
-            offset_bytes
-                .iter()
-                .for_each(|b| push_hex(&mut offset_string, *b));
-            offset_string
-        });
+        let data = parse_data(
+            file_header,
+            |idx| {
+                let mut offset_string = String::new();
+                let offset_bytes = ImageFileHeader::get_offset(idx)
+                    .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16))
+                    .unwrap_or(0)
+                    .to_le_bytes();
+                offset_bytes
+                    .iter()
+                    .for_each(|b| push_hex(&mut offset_string, *b));
+                offset_string
+            },
+            pe_parse::FILE_HEADER_MEANINGS.to_vec(),
+        );
 
         self.file_header_table.load(data, window, cx);
 
+        let mut image_base = 0;
         // Load OPT headers
         match pe_header.nt_header.optional_headers {
             OptionalHeaders::OptionalHeaders32(opt32) => {
@@ -317,17 +349,24 @@ impl Info {
                     parse_data_directory_from_array(&opt32.data_directory, |idx| idx.to_string());
                 self.data_dir_table.load(dir_data, window, cx);
 
-                let data = parse_data(opt_header, |idx| {
-                    let mut offset_string = String::new();
-                    let offset_bytes = OptionalHeaders32::get_offset(idx)
-                        .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16 + 24))
-                        .unwrap_or(0)
-                        .to_be_bytes();
-                    offset_bytes
-                        .iter()
-                        .for_each(|b| push_hex(&mut offset_string, *b));
-                    offset_string
-                });
+                let data = parse_data(
+                    opt_header,
+                    |idx| {
+                        let mut offset_string = String::new();
+                        let offset_bytes = OptionalHeaders32::get_offset(idx)
+                            .and_then(|offst| {
+                                Some(offst + pe_header.dos_header.e_lfanew as u16 + 24)
+                            })
+                            .unwrap_or(0)
+                            .to_le_bytes();
+                        offset_bytes
+                            .iter()
+                            .for_each(|b| push_hex(&mut offset_string, *b));
+                        offset_string
+                    },
+                    pe_parse::OPTIONAL_HEADER32_MEANINGS.to_vec(),
+                );
+                image_base = opt32.image_base as u64;
                 self.opt_header_table.load(data, window, cx);
             }
             OptionalHeaders::OptionalHeaders64(opt64) => {
@@ -338,20 +377,37 @@ impl Info {
                     parse_data_directory_from_array(&opt64.data_directory, |idx| idx.to_string());
                 self.data_dir_table.load(dir_data, window, cx);
 
-                let data = parse_data(opt_header, |idx| {
-                    let mut offset_string = String::new();
-                    let offset_bytes = OptionalHeaders64::get_offset(idx)
-                        .and_then(|offst| Some(offst + pe_header.dos_header.e_lfanew as u16 + 24))
-                        .unwrap_or(0)
-                        .to_be_bytes();
-                    offset_bytes
-                        .iter()
-                        .for_each(|b| push_hex(&mut offset_string, *b));
-                    offset_string
-                });
+                let data = parse_data(
+                    opt_header,
+                    |idx| {
+                        let mut offset_string = String::new();
+                        let offset_bytes = OptionalHeaders64::get_offset(idx)
+                            .and_then(|offst| {
+                                Some(offst + pe_header.dos_header.e_lfanew as u16 + 24)
+                            })
+                            .unwrap_or(0)
+                            .to_le_bytes();
+                        offset_bytes
+                            .iter()
+                            .for_each(|b| push_hex(&mut offset_string, *b));
+                        offset_string
+                    },
+                    pe_parse::OPTIONAL_HEADER64_MEANINGS.to_vec(),
+                );
+                image_base = opt64.image_base;
                 self.opt_header_table.load(data, window, cx);
             }
         }
+
+        let mut sections = HashMap::new();
+        for hdr in pe_header.section_headers.iter() {
+            let name = String::from_utf8_lossy(&hdr.name).to_string();
+            sections.insert(SharedString::new(name.as_str()), hdr.clone());
+        }
+        let values: Vec<SectionHeader> = sections.clone().into_values().collect();
+        self.section_headers_table
+            .load(&values, window, cx, image_base);
+        self.sections = sections;
 
         self.pe_header = Some(pe_header);
     }
@@ -376,6 +432,7 @@ fn parse_data(
     data_value: Value,
     //data_chunk: Map<String, Value>,
     offset_fn: impl Fn(usize) -> String,
+    meanings: Vec<&str>,
 ) -> Vec<HeaderData> {
     let serde_json::Value::Object(data_chunk) = data_value else {
         return vec![];
@@ -390,7 +447,7 @@ fn parse_data(
                 offset,
                 name: k.clone(),
                 value: v.clone(),
-                meaning: String::from("Test"),
+                meaning: meanings[i].to_string(),
             };
         })
         .collect()

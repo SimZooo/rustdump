@@ -52,13 +52,13 @@ impl HeaderTableDelegate {
                     .width(75.),
                 Column::new("name", "Name".to_string())
                     .resizable(true)
-                    .width(150.),
+                    .width(225.),
                 Column::new("value", "Value".to_string())
                     .resizable(true)
                     .width(250.),
                 Column::new("meaning", "Meaning".to_string())
                     .resizable(true)
-                    .width(175.),
+                    .width(300.),
             ],
         }
     }

@@ -6,26 +6,42 @@ use gpui_component::{
     ActiveTheme,
     table::{Column, Table, TableDelegate, TableState},
 };
+use rd_core::hex_string;
 
 use crate::{Route, RustDump};
 
 pub struct Hexdump {
-    dump: Rc<Vec<rd_core::OutputRow>>,
+    dump: Rc<Vec<Hexrow>>,
     table_delegate: HexDelegate,
     table_state: Entity<TableState<HexDelegate>>,
 }
 
 #[derive(Clone)]
+pub struct Hexrow {
+    pub offset: String,
+    pub bytes: String,
+    pub ascii: String,
+}
+
+#[derive(Clone)]
 struct HexDelegate {
-    data: Rc<Vec<rd_core::OutputRow>>,
+    data: Rc<Vec<Hexrow>>,
     columns: Vec<Column>,
 }
 
 impl HexDelegate {
-    fn new(data: Rc<Vec<rd_core::OutputRow>>, window: &mut Window) -> Self {
+    fn new(data: Vec<rd_core::OutputRow>, window: &mut Window) -> Self {
         let col_w = window.bounds().size.width.to_f64() / 3.;
+        let data = data
+            .iter()
+            .map(|row| Hexrow {
+                offset: hex_string(&row.offset.to_le_bytes()),
+                bytes: row.ascii.clone(),
+                ascii: row.bytes_string(),
+            })
+            .collect();
         Self {
-            data: data.clone(),
+            data: Rc::new(data),
             columns: vec![
                 Column::new("offset", "Offset")
                     .width(col_w)
@@ -61,9 +77,9 @@ impl TableDelegate for HexDelegate {
         let col = &self.columns[col_ix];
 
         match col.key.as_ref() {
-            "offset" => div().child(format!("{:08X}", row.offset)).border_0(),
+            "offset" => div().child(row.offset.clone()),
             "hex" => div().child(row.ascii.clone()),
-            "ascii" => div().child(row.bytes_string()),
+            "ascii" => div().child(row.ascii.clone()),
             _ => div().child("".to_string()),
         }
     }
@@ -73,10 +89,8 @@ impl Hexdump {
     pub fn new(window: &mut Window, cx: &mut Context<RustDump>) -> Self {
         Self {
             dump: Rc::new(Vec::new()),
-            table_delegate: HexDelegate::new(Rc::new(Vec::new()), window),
-            table_state: cx.new(|cx| {
-                TableState::new(HexDelegate::new(Rc::new(Vec::new()), window), window, cx)
-            }),
+            table_delegate: HexDelegate::new(vec![], window),
+            table_state: cx.new(|cx| TableState::new(HexDelegate::new(vec![], window), window, cx)),
         }
     }
 
@@ -85,11 +99,9 @@ impl Hexdump {
         let mut dump = vec![];
         let _ = rd_core::create_dump(path.to_path_buf(), &mut dump);
         println!("Dump time: {}", start.elapsed().as_secs_f64());
-        let dump = Rc::new(dump);
         let delegate = HexDelegate::new(dump.clone(), window);
         let state = cx.new(|cx| TableState::new(delegate.clone(), window, cx));
 
-        self.dump = dump;
         self.table_delegate = delegate;
         self.table_state = state;
     }

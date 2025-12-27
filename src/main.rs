@@ -42,7 +42,8 @@ pub enum InfoDisplayPage {
     DOSStub,
     FileHdr,
     OptHdr,
-    Section(String),
+    SectionHeaders,
+    Section(SharedString),
 }
 
 pub trait Route {

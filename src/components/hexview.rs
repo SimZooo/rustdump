@@ -105,7 +105,7 @@ impl Hexview {
             .map(|(i, d)| {
                 let mut offset = String::new();
                 (i as u16 * 16 + idx_offset)
-                    .to_be_bytes()
+                    .to_le_bytes()
                     .iter()
                     .for_each(|b| push_hex(&mut offset, *b));
 
